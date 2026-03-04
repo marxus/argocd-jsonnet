@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# prepend /tanka to PATH so custom tools (helm, yq, tk) are found first
+export PATH="/tanka:$PATH"
+
+# pass-through to real helm if no main.jsonnet or not a template call
+[[ ! -f main.jsonnet ]] && exec helm "$@"
+[[ "$1" != template ]] && exit 0
+
+# parse helm args — look for "tanka=*" marker and collect -f value files
+args=() tanka="" values=()
+while [[ "$#" -gt 0 ]]; do
+  args+=("$1")
+  case "$1" in
+    tanka=) tanka="$1"; shift;;
+    --values) args+=("$2"); values+=("$1" "$2"); shift 2;;
+    *) shift;;
+  esac
+done
+
+# no tanka marker found — fall back to real helm
+[[ -z "$tanka" ]] && exec helm "${args[@]}"
+
+# evaluate main.jsonnet via tk-eval with collected value files
+exec "$(pwd | cut -d/ -f-4)/.bin/tk-eval" main.jsonnet "${values[@]}"

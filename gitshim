@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# resolve the real git binary, skipping this shim
+git="$(which -a git | grep -v "${BASH_SOURCE[0]}" | head -1)"
+
+# pass-through non-clean commands to real git
+[[ "$1" != clean ]] && exec "$git" "$@"
+"$git" "$@"
+
+# making sure i got helm-git installed
+(
+  cd /helm-working-dir; mkdir -p plugins;
+  [[ ! -d helm-git ]] && cp -r /tanka/helm-git plugins
+)
+
+# after git clean: install dependencies and set up helm charts
+files=(install.sh chartfile.yaml jsonnetfile.*)
+if ls "${files[@]}" &>/dev/null; then 
+
+  # prepend /tanka to PATH so custom tools (jb, yq, tk) are found first
+  export PATH="/tanka:$PATH"
+
+  # cache deps by content hash — re-install only when files change
+  cache="/tmp/$(cat "${files[@]}" | md5sum | cut -d ' ' -f 1)"
+  mkdir -p "$cache"; cp "${files[@]}" "$cache"
+  (cd "$cache"; ./install.sh)
+
+  # hard-link cached deps into the repo so tanka can resolve imports
+  cp -al "$cache/charts" charts
+  cp -al "$cache/vendor" vendor
+
+  # drop Chart.yaml next to each main.jsonnet so argo detects it as a helm app
+  exec touch $(find . -type f -name main.jsonnet -printf '%h/Chart.yaml ')
+fi
