@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# resolve the real git binary
+git="$(which -a git | sed -n 2p)"
+
+# if not "git clean" -> exec git
+[ "$1" != clean ] && exec "$git" "$@"
+
+# run the original git clean
+"$git" "$@"
+
+# ensure custom tools are first in PATH, including the jb binary
+export PATH="/jsonnet:$PATH"
+
+# jsonnet-bundler (jb) dependency resolution
+# runs during "git clean" phase, before any helm template calls
+# skip if no jsonnetfile exists in this repo
+ls jsonnetfile.* || exit 0
+# use a content-hash of jsonnetfile.* as cache key so jb install only re-runs when deps change
+cache="/tmp/$(cat jsonnetfile.* | md5sum)"
+mkdir -p _vendor "$cache"
+cp jsonnetfile.* "$cache"
+(cd "$cache"; jb install)
+# hard-link vendor into _vendor so jsonnet can resolve imports without modifying the repo
+cp -al "$cache/vendor" _vendor
+
+# create a Chart.yaml alongside each main.jsonnet so argo treats it as a helm app
+exec touch /tmp $(find . -type f -name _main.jsonnet -printf '%h/Chart.yaml ')

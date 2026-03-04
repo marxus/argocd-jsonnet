@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ensure custom tools are first in PATH, including the real helm binary
+export PATH="/jsonnet:$PATH"
+
+# if main.jsonnet doesn't exist -> exec helm
+[ ! -f main.jsonnet ] && exec helm "$@"
+
+# if not "helm template" -> exit
+[ "$1" != template ] && exit 0
+
+# parse envs from the "helm template . args..." command
+export ARGOCD_APP_NAME ARGOCD_APP_NAMESPACE KUBE_VERSION KUBE_API_VERSIONS
+ARGS=("$@")
+for ((i = 0; i < "$#"; i++)); do
+  case "${ARGS[$i]}" in
+    # if "jsonnet" isn't explicitly stated in the helm.values field -> exec helm
+    --values)        i="$((i + 1))"; [ "$(cat "${ARGS[$i]}")" != jsonnet ] && exec helm "$@";;
+    --name-template) i="$((i + 1))"; ARGOCD_APP_NAME="${ARGS[$i]}";;
+    --namespace)     i="$((i + 1))"; ARGOCD_APP_NAMESPACE="${ARGS[$i]}";;
+    --kube-version)  i="$((i + 1))"; KUBE_VERSION="${ARGS[$i]}";;
+    --api-versions)  i="$((i + 1))"; KUBE_API_VERSIONS="${ARGS[$i]},$KUBE_API_VERSIONS";;
+  esac
+done
+KUBE_API_VERSIONS="${KUBE_API_VERSIONS::-1}"
+
+# parse envs from the repo state via git
+export ARGOCD_APP_REVISION="$(git log -n1 --pretty="format:%H")"
+export ARGOCD_APP_REVISION_SHORT="${ARGOCD_APP_REVISION:0:7}"
+export ARGOCD_APP_SOURCE_REPO_TOP_LEVEL="$(pwd | cut -d/ -f-4)"
+
+# extract envs from the application manifest
+eval "$(argocd --core app get "$ARGOCD_APP_NAMESPACE/$ARGOCD_APP_NAME" -o yaml | yq '.spec.source |
+  "export ARGOCD_APP_SOURCE_PATH=" + (.path | @sh),
+  "export ARGOCD_APP_SOURCE_REPO_URL=" + (.repoURL | @sh),
+  "export ARGOCD_APP_SOURCE_TARGET_REVISION=" + (.targetRevision // "HEAD" | @sh),
+  (.helm.parameters // [])[] | "export ARGOCD_ENV_" + .name + "=" + (.value | @sh)
+')"
+
+exec jsonnet -J "$ARGOCD_APP_SOURCE_REPO_TOP_LEVEL/_vendor" _main.jsonnet
